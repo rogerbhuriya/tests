@@ -24,10 +24,12 @@ jobs:
       - name: Start victim debugger as uid 2001
         run: |
           docker exec -d --user victim hhvm-vsdebug-proof \
-            hhvm -m vsdebug \
+            sh -lc 'hhvm -m vsdebug \
+              -vEval.Debugger.VSDebugLogFile=/tmp/hhvm-vsdebug.log \
               --vsDebugDomainSocketPath=/tmp/hhvm-vsdebug.sock \
               --vsDebugNoWait=true \
-              /proof/hhvm-vsdebug-victim.php
+              /proof/hhvm-vsdebug-victim.php \
+              >/tmp/hhvm-victim.log 2>&1'
           for attempt in $(seq 1 30); do
             if docker exec hhvm-vsdebug-proof test -S /tmp/hhvm-vsdebug.sock; then
               break
@@ -40,12 +42,16 @@ jobs:
       - name: Attach and evaluate as unrelated uid 2002
         run: |
           docker exec --user attacker hhvm-vsdebug-proof \
-            hhvm /proof/hhvm-vsdebug-attacker.php | tee /tmp/attacker-output.txt
+            python3 /proof/hhvm-vsdebug-attacker.py | tee /tmp/attacker-output.txt
           docker exec hhvm-vsdebug-proof stat -c 'proof_uid=%u proof_gid=%g' /tmp/hhvm-cross-user-proof
           docker exec hhvm-vsdebug-proof cat /tmp/hhvm-cross-user-proof
           grep -q 'evaluate_success=true' /tmp/attacker-output.txt
           test "$(docker exec hhvm-vsdebug-proof cat /tmp/hhvm-cross-user-proof)" = 'executed-as-uid=2001'
       - name: Container logs
         if: always()
-        run: docker logs hhvm-vsdebug-proof
+        run: |
+          docker logs hhvm-vsdebug-proof
+          docker exec hhvm-vsdebug-proof cat /tmp/hhvm-victim.log || true
+          docker exec hhvm-vsdebug-proof cat /tmp/hhvm-vsdebug.log || true
+
 
