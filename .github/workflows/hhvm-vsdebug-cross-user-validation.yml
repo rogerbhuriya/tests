@@ -27,7 +27,6 @@ jobs:
             sh -lc 'hhvm -m vsdebug \
               -vEval.Debugger.VSDebugLogFile=/tmp/hhvm-vsdebug.log \
               --vsDebugDomainSocketPath=/tmp/hhvm-vsdebug.sock \
-              --vsDebugNoWait=true \
               /proof/hhvm-vsdebug-victim.php \
               >/tmp/hhvm-victim.log 2>&1'
           for attempt in $(seq 1 30); do
@@ -38,7 +37,7 @@ jobs:
           done
           docker exec hhvm-vsdebug-proof test -S /tmp/hhvm-vsdebug.sock
           docker exec hhvm-vsdebug-proof stat -c 'socket_mode=%a socket_uid=%u socket_gid=%g' /tmp/hhvm-vsdebug.sock
-          docker exec hhvm-vsdebug-proof cat /tmp/hhvm-victim-uid
+          docker exec hhvm-vsdebug-proof ps -eo uid,pid,args
       - name: Attach and evaluate as unrelated uid 2002
         run: |
           docker exec --user attacker hhvm-vsdebug-proof \
@@ -53,5 +52,6 @@ jobs:
           docker logs hhvm-vsdebug-proof
           docker exec hhvm-vsdebug-proof cat /tmp/hhvm-victim.log || true
           docker exec hhvm-vsdebug-proof cat /tmp/hhvm-vsdebug.log || true
+          docker exec hhvm-vsdebug-proof sh -lc 'cat /tmp/stacktrace.*.log' || true
 
 
