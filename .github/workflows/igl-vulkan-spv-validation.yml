@@ -1,0 +1,117 @@
+name: IGL Vulkan SPIR-V validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact IGL head
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/igl
+          ref: f1e7b6eba414108286c6d66bd5e6a4922cdd525d
+          persist-credentials: false
+
+      - name: Install CPU Vulkan and compiler
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libvulkan-dev mesa-vulkan-drivers
+
+      - name: Test whether Vulkan accepts malformed module
+        env:
+          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+        run: |
+          cat > /tmp/vulkan-gate.cpp <<'CPP'
+          #include <cstdint>
+          #include <iostream>
+          #include <vector>
+          #include <vulkan/vulkan.h>
+
+          int main() {
+            VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
+            app.pApplicationName = "igl-proof";
+            app.apiVersion = VK_API_VERSION_1_0;
+            VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
+            ici.pApplicationInfo = &app;
+            VkInstance instance = VK_NULL_HANDLE;
+            if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) return 2;
+            uint32_t count = 0;
+            if (vkEnumeratePhysicalDevices(instance, &count, nullptr) != VK_SUCCESS || count == 0) return 3;
+            std::vector<VkPhysicalDevice> physical(count);
+            vkEnumeratePhysicalDevices(instance, &count, physical.data());
+            uint32_t queueFamilyCount = 0;
+            vkGetPhysicalDeviceQueueFamilyProperties(physical[0], &queueFamilyCount, nullptr);
+            std::vector<VkQueueFamilyProperties> qprops(queueFamilyCount);
+            vkGetPhysicalDeviceQueueFamilyProperties(physical[0], &queueFamilyCount, qprops.data());
+            uint32_t queueFamily = 0;
+            while (queueFamily < queueFamilyCount && qprops[queueFamily].queueCount == 0) ++queueFamily;
+            float priority = 1.0f;
+            VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+            qci.queueFamilyIndex = queueFamily;
+            qci.queueCount = 1;
+            qci.pQueuePriorities = &priority;
+            VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
+            dci.queueCreateInfoCount = 1;
+            dci.pQueueCreateInfos = &qci;
+            VkDevice device = VK_NULL_HANDLE;
+            if (vkCreateDevice(physical[0], &dci, nullptr, &device) != VK_SUCCESS) return 4;
+
+            const uint32_t malformed[] = {
+                0x07230203u, 0x00010000u, 0u, 1u, 0u,
+                (4u << 16u) | 71u, 0xffffffffu, 33u, 0x41424344u,
+            };
+            VkShaderModuleCreateInfo sci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+            sci.codeSize = sizeof(malformed);
+            sci.pCode = malformed;
+            VkShaderModule module = VK_NULL_HANDLE;
+            const VkResult result = vkCreateShaderModule(device, &sci, nullptr, &module);
+            std::cout << "vkCreateShaderModule_result=" << result << "\n";
+            std::cout << "vk_create_success=" << (result == VK_SUCCESS ? "true" : "false") << "\n";
+            if (module != VK_NULL_HANDLE) vkDestroyShaderModule(device, module, nullptr);
+            vkDestroyDevice(device, nullptr);
+            vkDestroyInstance(instance, nullptr);
+            return 0;
+          }
+          CPP
+          clang++ -std=c++20 -O2 /tmp/vulkan-gate.cpp -lvulkan -o /tmp/vulkan-gate
+          /tmp/vulkan-gate
+
+      - name: Confirm exact release-mode IGL memory fault
+        run: |
+          git clone --filter=blob:none --no-checkout https://github.com/KhronosGroup/SPIRV-Headers.git /tmp/SPIRV-Headers
+          git -C /tmp/SPIRV-Headers fetch --depth=1 origin cca08c63cefa129d082abca0302adcb81610b465
+          git -C /tmp/SPIRV-Headers checkout --detach cca08c63cefa129d082abca0302adcb81610b465
+          git clone --filter=blob:none --no-checkout https://github.com/corporateshark/ldrutils /tmp/ldrutils
+          git -C /tmp/ldrutils fetch --depth=1 origin 3b3788dc054f32a2c81c2f8dee7eb7739d53fc02
+          git -C /tmp/ldrutils checkout --detach 3b3788dc054f32a2c81c2f8dee7eb7739d53fc02
+          cat > /tmp/igl-proof.cpp <<'CPP'
+          #include <cstdint>
+          #include <igl/vulkan/util/SpvReflection.h>
+          #include <spirv/unified1/spirv.h>
+          int main() {
+            const uint32_t malformed[] = {
+                SpvMagicNumber, 0x00010000u, 0u, 1u, 0u,
+                (4u << SpvWordCountShift) | SpvOpDecorate,
+                0xffffffffu, SpvDecorationBinding, 0x41424344u,
+            };
+            (void)igl::vulkan::util::getReflectionData(malformed, sizeof(malformed));
+          }
+          CPP
+          clang++ -std=c++20 -O1 -g -DNDEBUG -DIGL_CMAKE_BUILD=1 \
+            -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -I src -I /tmp -I /tmp/SPIRV-Headers/include \
+            /tmp/igl-proof.cpp src/igl/vulkan/util/SpvReflection.cpp -o /tmp/igl-proof
+          set +e
+          /tmp/igl-proof >/tmp/igl-proof.stdout 2>/tmp/igl-proof.stderr
+          proof_status=$?
+          set -e
+          cat /tmp/igl-proof.stderr
+          test "$proof_status" -ne 0
+          grep -q 'SpvReflection.cpp:136' /tmp/igl-proof.stderr
+          echo 'finding_reproduced=true'
