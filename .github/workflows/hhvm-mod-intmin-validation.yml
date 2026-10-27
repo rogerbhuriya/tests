@@ -1,0 +1,30 @@
+name: HHVM INT64_MIN modulo validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Record image identity
+        run: |
+          docker pull hhvm/hhvm:latest
+          docker image inspect hhvm/hhvm:latest --format '{{index .RepoDigests 0}}'
+      - name: Interpreter baseline
+        run: |
+          docker run --rm \
+            -v "$PWD/hhvm-mod-intmin.php:/tmp/probe.php:ro" \
+            hhvm/hhvm:latest \
+            hhvm -vEval.Jit=false /tmp/probe.php
+      - name: JIT execution
+        run: |
+          docker run --rm \
+            -v "$PWD/hhvm-mod-intmin.php:/tmp/probe.php:ro" \
+            hhvm/hhvm:latest \
+            hhvm -vEval.Jit=true -vEval.JitThreshold=1 /tmp/probe.php
