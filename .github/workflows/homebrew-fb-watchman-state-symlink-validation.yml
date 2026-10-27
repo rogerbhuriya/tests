@@ -1,0 +1,25 @@
+name: homebrew-fb Watchman state symlink validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@v4
+
+      - name: Checkout exact homebrew-fb revision
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/homebrew-fb
+          ref: 400157f24674b4015d2639646030807e0997bb83
+          path: homebrew-fb
+
+      - name: Run isolated cross-user proof
+        run: ./proofs/homebrew-fb-watchman-state-symlink.sh "$GITHUB_WORKSPACE/homebrew-fb"
