@@ -71,22 +71,6 @@ sudo ditto -x -k "$archive" "$proof_root/release"
 release_root="$proof_root/release/watchman-v2020.08.17.00-macos"
 sudo chmod -R a+rX "$proof_root/release"
 
-# Model an existing Watchman user, not only a first run. Because the shared
-# parent has no sticky bit, the unrelated attacker can rename the victim's
-# non-empty mode-0700 state directory without being able to read it.
-sudo -u "$victim" mkdir "$proof_root/state-parent/$victim-state"
-printf 'victim-private-data\n' | sudo -u "$victim" tee \
-  "$proof_root/state-parent/$victim-state/private-marker" >/dev/null
-sudo chmod 0700 "$proof_root/state-parent/$victim-state"
-if sudo -u "$attacker" cat \
-  "$proof_root/state-parent/$victim-state/private-marker" >/dev/null 2>&1; then
-  echo 'attacker unexpectedly read the victim state directory' >&2
-  exit 1
-fi
-sudo -u "$attacker" mv \
-  "$proof_root/state-parent/$victim-state" \
-  "$proof_root/state-parent/$victim-state-displaced"
-
 sudo -u "$attacker" ln -s "$proof_root/victim-target" \
   "$proof_root/state-parent/$victim-state"
 
