@@ -11,8 +11,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     env:
-      HHVM_OSS_WORK_ROOT: ${{ runner.temp }}/hhvm-oss
-      HHVM_BIN: ${{ runner.temp }}/hhvm-oss/hhvm/hphp/hhvm/hhvm
+      HHVM_OSS_WORK_ROOT: /tmp/hhvm-oss
+      HHVM_BIN: /tmp/hhvm-oss/hhvm/hphp/hhvm/hhvm
       HHVM_OSS_BUILD_TARGET: hhvm
       HHVM_OSS_BUILD_TOOLS: false
       HHVM_OSS_CMAKE_BUILD_TYPE: DebugOpt
