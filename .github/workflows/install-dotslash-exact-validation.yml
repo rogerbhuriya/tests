@@ -1,0 +1,33 @@
+name: install-dotslash exact-commit validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux x64
+            os: ubuntu-latest
+          - name: Linux ARM64
+            os: ubuntu-24.04-arm
+          - name: macOS ARM64
+            os: macos-14
+          - name: Windows x64
+            os: windows-latest
+    steps:
+      - name: Install exact reviewed action
+        uses: facebook/install-dotslash@0971fd2071b83392cf02706266fee3877e3bcaf3
+      - name: Check installed executable
+        shell: bash
+        run: |
+          command -v dotslash
+          dotslash --version
