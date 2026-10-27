@@ -62,11 +62,12 @@ sudo chmod 0755 "$proof_root" "$proof_root/release"
 sudo chmod 02777 "$proof_root/state-parent"
 sudo chmod 0755 "$proof_root/victim-target"
 
+archive="$RUNNER_TEMP/watchman-v2020.08.17.00-macos.zip"
 curl --fail --location --silent --show-error \
-  --output "$proof_root/watchman.zip" "$artifact_url"
-actual_zip_sha256=$(shasum -a 256 "$proof_root/watchman.zip" | awk '{print $1}')
+  --output "$archive" "$artifact_url"
+actual_zip_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
 [[ $actual_zip_sha256 == "$expected_zip_sha256" ]]
-ditto -x -k "$proof_root/watchman.zip" "$proof_root/release"
+sudo ditto -x -k "$archive" "$proof_root/release"
 release_root="$proof_root/release/watchman-v2020.08.17.00-macos"
 sudo chmod -R a+rX "$proof_root/release"
 
