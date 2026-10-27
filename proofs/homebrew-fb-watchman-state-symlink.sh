@@ -92,7 +92,7 @@ sudo -u "$victim" /usr/bin/env \
   DYLD_LIBRARY_PATH="$release_root/lib" \
   "$release_root/bin/watchman" \
   --test-state-dir="$proof_root/state-parent" \
-  --no-spawn get-sockname | tee "$proof_root/watchman-output.json"
+  --no-spawn get-sockname | tee "$RUNNER_TEMP/watchman-output.json"
 
 after_mode=$(stat -f '%Lp' "$proof_root/victim-target")
 after_symbolic_mode=$(stat -f '%Sp' "$proof_root/victim-target")
@@ -103,5 +103,5 @@ printf 'after_mode=%s after_symbolic_mode=%s after_owner=%s\n' \
 [[ $after_mode == 700 ]]
 [[ $after_owner == "$victim" ]]
 grep -F "$proof_root/state-parent/$victim-state/sock" \
-  "$proof_root/watchman-output.json"
+  "$RUNNER_TEMP/watchman-output.json"
 echo 'cross_user_symlink_chmod=true'
