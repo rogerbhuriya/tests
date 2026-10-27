@@ -30,6 +30,22 @@ jobs:
           uname -a
           df -h /
           free -h
+      - name: Avoid building bundled liburing tests
+        working-directory: hhvm
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('build/oss_build.sh')
+          source = path.read_text()
+          start = source.index('>>> Phase 2: Building liburing')
+          end = source.index('# Phase 3: Build Meta dependencies', start)
+          phase = source[start:end]
+          old = '    make -j"$JOBS"\n    make install'
+          new = '    make -C src -j"$JOBS"\n    make -C src install'
+          if phase.count(old) != 1:
+              raise SystemExit('expected liburing build block not found')
+          path.write_text(source[:start] + phase.replace(old, new, 1) + source[end:])
+          PY
       - name: Build exact current HHVM
         working-directory: hhvm
         run: ./build/oss_build.sh
