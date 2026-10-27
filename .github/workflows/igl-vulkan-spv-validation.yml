@@ -70,7 +70,7 @@ jobs:
 
             const uint32_t malformed[] = {
                 0x07230203u, 0x00010000u, 0u, 1u, 0u,
-                (4u << 16u) | 71u, 0xffffffffu, 33u, 0x41424344u,
+                (4u << 16u) | 71u, 1u, 33u, 0x41424344u,
             };
             VkShaderModuleCreateInfo sci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
             sci.codeSize = sizeof(malformed);
@@ -104,7 +104,7 @@ jobs:
             const uint32_t malformed[] = {
                 SpvMagicNumber, 0x00010000u, 0u, 1u, 0u,
                 (4u << SpvWordCountShift) | SpvOpDecorate,
-                0xffffffffu, SpvDecorationBinding, 0x41424344u,
+                1u, SpvDecorationBinding, 0x41424344u,
             };
             (void)igl::vulkan::util::getReflectionData(malformed, sizeof(malformed));
           }
