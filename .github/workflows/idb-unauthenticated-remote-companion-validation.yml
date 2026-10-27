@@ -1,0 +1,112 @@
+name: Validate idb unauthenticated remote companion
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Download and verify official v1.7.7 artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='https://github.com/facebook/idb/releases/download/v1.7.7'
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/idb-companion.tar.gz" "$base/idb-companion.macos-arm64.tar.gz"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/idb-companion.tar.gz.sha256" "$base/idb-companion.macos-arm64.tar.gz.sha256"
+          curl --fail --location --retry 3 --output "$RUNNER_TEMP/fb_idb.whl" "$base/fb_idb-1.7.7-py3-none-any.whl"
+          expected="$(awk '{print $1}' "$RUNNER_TEMP/idb-companion.tar.gz.sha256")"
+          actual="$(shasum -a 256 "$RUNNER_TEMP/idb-companion.tar.gz" | awk '{print $1}')"
+          test "$actual" = "$expected"
+          mkdir "$RUNNER_TEMP/idb-companion"
+          tar -C "$RUNNER_TEMP/idb-companion" -xzf "$RUNNER_TEMP/idb-companion.tar.gz"
+          codesign --verify --deep --strict "$RUNNER_TEMP/idb-companion/idb_companion"
+          "$RUNNER_TEMP/idb-companion/idb_companion" --version
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --disable-pip-version-check "$RUNNER_TEMP/fb_idb.whl"
+
+      - name: Prove wildcard listener and credential-free remote RPCs
+        shell: bash
+        run: |
+          set -euo pipefail
+          companion="$RUNNER_TEMP/idb-companion/idb_companion"
+          stdout="$RUNNER_TEMP/companion.stdout"
+          stderr="$RUNNER_TEMP/companion.stderr"
+
+          "$companion" \
+            --udid mac \
+            --grpc-port 0 \
+            --idle-shutdown-time 300 \
+            --log-level debug \
+            >"$stdout" 2>"$stderr" &
+          companion_pid=$!
+          cleanup() {
+            kill "$companion_pid" 2>/dev/null || true
+            wait "$companion_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 60); do
+            if test -s "$stdout"; then
+              break
+            fi
+            if ! kill -0 "$companion_pid" 2>/dev/null; then
+              cat "$stderr"
+              exit 1
+            fi
+            sleep 1
+          done
+          test -s "$stdout"
+          first_line="$(head -n 1 "$stdout")"
+          printf 'startup=%s\n' "$first_line"
+          port="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["grpc_port"])' "$first_line")"
+          test "$port" -gt 0
+
+          listener="$(lsof -nP -a -p "$companion_pid" -iTCP:"$port" -sTCP:LISTEN)"
+          printf '%s\n' "$listener"
+          printf '%s\n' "$listener" | grep -E '\*:'"$port"'|\[::\]:'"$port"
+
+          interface="$(route -n get default | awk '/interface:/{print $2; exit}')"
+          host_ip="$(ipconfig getifaddr "$interface")"
+          test -n "$host_ip"
+          test "$host_ip" != '127.0.0.1'
+          target="$host_ip:$port"
+          printf 'remote_target=%s\n' "$target"
+
+          env -u IDB_COMPANION -u IDB_COMPANION_TLS \
+            "$RUNNER_TEMP/venv/bin/idb" --companion "$target" describe --json \
+            | tee "$RUNNER_TEMP/describe.json"
+          python3 - "$RUNNER_TEMP/describe.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          description = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          assert description.get("udid") == "mac", description
+          print("unauthenticated_describe_udid=mac")
+          PY
+
+          env -u IDB_COMPANION -u IDB_COMPANION_TLS \
+            "$RUNNER_TEMP/venv/bin/idb" --companion "$target" list-apps --json \
+            > "$RUNNER_TEMP/apps.json"
+          python3 - "$RUNNER_TEMP/apps.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          lines = [line for line in pathlib.Path(sys.argv[1]).read_text().splitlines() if line]
+          apps = [json.loads(line) for line in lines]
+          assert all(isinstance(app, dict) for app in apps), apps
+          print(f"unauthenticated_list_apps_count={len(apps)}")
+          PY
+
+          grep -q 'Starting swift server on tcp port' "$stderr"
+          if grep -q 'Starting swift server with TLS path' "$stderr"; then
+            echo 'unexpected TLS listener' >&2
+            exit 1
+          fi
+          printf 'proof=PASS wildcard plaintext listener accepted remote-address RPCs without credentials\n'
