@@ -1,0 +1,35 @@
+name: HHVM DNS TXT validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Start controlled DNS responder
+        run: |
+          docker network create --subnet 172.28.53.0/24 hhvm-dns
+          docker run -d --name hhvm-dns-server \
+            --network hhvm-dns --ip 172.28.53.53 \
+            -v "$PWD/hhvm-dns-txt-server.py:/server.py:ro" \
+            python:3.13-slim python /server.py
+          sleep 2
+          docker logs hhvm-dns-server
+      - name: Run exact HHVM parser
+        run: |
+          docker pull hhvm/hhvm:latest
+          docker image inspect hhvm/hhvm:latest --format '{{index .RepoDigests 0}}'
+          docker run --rm \
+            --network hhvm-dns --dns 172.28.53.53 \
+            -v "$PWD/hhvm-dns-txt-probe.php:/tmp/probe.php:ro" \
+            hhvm/hhvm:latest \
+            hhvm -vEval.Jit=false /tmp/probe.php
+      - name: DNS responder log
+        if: always()
+        run: docker logs hhvm-dns-server
