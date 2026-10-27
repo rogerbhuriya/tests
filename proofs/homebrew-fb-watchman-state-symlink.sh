@@ -81,7 +81,7 @@ fi
 
 before_mode=$(stat -f '%Lp' "$proof_root/victim-target")
 before_owner=$(stat -f '%Su' "$proof_root/victim-target")
-link_owner=$(stat -f '%Su' -h "$proof_root/state-parent/$victim-state")
+link_owner=$(stat -f '%Su' "$proof_root/state-parent/$victim-state")
 printf 'before_mode=%s before_owner=%s link_owner=%s\n' \
   "$before_mode" "$before_owner" "$link_owner"
 [[ $before_mode == 755 ]]
