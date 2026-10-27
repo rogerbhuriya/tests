@@ -1,0 +1,82 @@
+name: jscodeshift symlink escape validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Fetch exact reviewed source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none https://github.com/facebook/jscodeshift.git "$RUNNER_TEMP/jscodeshift"
+          git -C "$RUNNER_TEMP/jscodeshift" checkout --detach 938bc3c355dd77fd3cc8063c8615ee0f9caeed89
+          test "$(git -C "$RUNNER_TEMP/jscodeshift" rev-parse HEAD)" = 938bc3c355dd77fd3cc8063c8615ee0f9caeed89
+          cd "$RUNNER_TEMP/jscodeshift"
+          npx --yes yarn@1.22.22 install --frozen-lockfile
+
+      - name: Create bounded symlink proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/proof"
+          mkdir -p "$proof/project" "$proof/outside-directory"
+          cat > "$proof/transform.js" <<'JS'
+          module.exports = function transform(file) {
+            return file.source
+              .replace('OUTSIDE_FILE_UNCHANGED', 'OUTSIDE_FILE_MODIFIED')
+              .replace('OUTSIDE_DIRECTORY_UNCHANGED', 'OUTSIDE_DIRECTORY_MODIFIED');
+          };
+          JS
+          printf '%s\n' "const marker = 'OUTSIDE_FILE_UNCHANGED';" > "$proof/outside-file.js"
+          printf '%s\n' "const marker = 'OUTSIDE_DIRECTORY_UNCHANGED';" > "$proof/outside-directory/outside-directory.js"
+          ln -s ../outside-file.js "$proof/project/linked-file.js"
+          ln -s ../outside-directory "$proof/project/linked-directory"
+
+      - name: Validate exact current commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/proof"
+          node "$RUNNER_TEMP/jscodeshift/bin/jscodeshift.js" \
+            --run-in-band --no-babel \
+            --transform "$proof/transform.js" \
+            "$proof/project"
+          grep -Fq OUTSIDE_FILE_MODIFIED "$proof/outside-file.js"
+          grep -Fq OUTSIDE_DIRECTORY_MODIFIED "$proof/outside-directory/outside-directory.js"
+          test -L "$proof/project/linked-file.js"
+          test -L "$proof/project/linked-directory"
+          echo current_exact_symlink_escape=true
+
+      - name: Validate latest npm release 17.4.0
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof="$RUNNER_TEMP/proof"
+          printf '%s\n' "const marker = 'OUTSIDE_FILE_UNCHANGED';" > "$proof/outside-file.js"
+          printf '%s\n' "const marker = 'OUTSIDE_DIRECTORY_UNCHANGED';" > "$proof/outside-directory/outside-directory.js"
+          npm install --prefix "$RUNNER_TEMP/release" --ignore-scripts jscodeshift@17.4.0
+          release="$RUNNER_TEMP/release/node_modules/jscodeshift"
+          test "$(node -p "require('$release/package.json').version")" = 17.4.0
+          cmp "$RUNNER_TEMP/jscodeshift/src/Runner.js" "$release/src/Runner.js"
+          node "$release/bin/jscodeshift.js" \
+            --run-in-band --no-babel \
+            --transform "$proof/transform.js" \
+            "$proof/project"
+          grep -Fq OUTSIDE_FILE_MODIFIED "$proof/outside-file.js"
+          grep -Fq OUTSIDE_DIRECTORY_MODIFIED "$proof/outside-directory/outside-directory.js"
+          echo latest_release_symlink_escape=true
+          echo finding_reproduced=true
