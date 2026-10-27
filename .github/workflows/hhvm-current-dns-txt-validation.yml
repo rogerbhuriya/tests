@@ -1,0 +1,46 @@
+name: Current HHVM DNS TXT validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      HHVM_OSS_WORK_ROOT: ${{ runner.temp }}/hhvm-oss
+      HHVM_BIN: ${{ runner.temp }}/hhvm-oss/hhvm/hphp/hhvm/hhvm
+      HHVM_OSS_BUILD_TARGET: hhvm
+      HHVM_OSS_BUILD_TOOLS: false
+      HHVM_OSS_CMAKE_BUILD_TYPE: DebugOpt
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@v6
+      - name: Checkout exact HHVM revision
+        uses: actions/checkout@v6
+        with:
+          repository: facebook/hhvm
+          ref: e88b44c9d2a6c653993568fbaadabec31d497ef0
+          path: hhvm
+      - name: Record runner
+        run: |
+          uname -a
+          df -h /
+          free -h
+      - name: Build exact current HHVM
+        working-directory: hhvm
+        run: ./build/oss_build.sh
+      - name: Run controlled DNS proof
+        run: |
+          sudo cp /etc/resolv.conf /tmp/resolv.conf.original
+          printf 'nameserver 127.0.0.1\noptions timeout:1 attempts:1\n' \
+            | sudo tee /etc/resolv.conf >/dev/null
+          sudo python3 hhvm-dns-txt-server.py >/tmp/hhvm-dns-server.log 2>&1 &
+          dns_pid=$!
+          trap 'sudo kill "$dns_pid" 2>/dev/null || true; sudo cp /tmp/resolv.conf.original /etc/resolv.conf' EXIT
+          sleep 1
+          "$HHVM_BIN" -vEval.Jit=false hhvm-dns-txt-probe.php
+          sudo cat /tmp/hhvm-dns-server.log
