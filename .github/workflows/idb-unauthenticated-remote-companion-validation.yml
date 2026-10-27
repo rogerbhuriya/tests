@@ -80,14 +80,16 @@ jobs:
           env -u IDB_COMPANION -u IDB_COMPANION_TLS \
             "$RUNNER_TEMP/venv/bin/idb" --companion "$target" describe --json \
             | tee "$RUNNER_TEMP/describe.json"
-          python3 - "$RUNNER_TEMP/describe.json" <<'PY'
+          python3 - "$RUNNER_TEMP/describe.json" "$host_ip" <<'PY'
           import json
           import pathlib
           import sys
 
           description = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          assert description.get("udid") == "mac", description
-          print("unauthenticated_describe_udid=mac")
+          assert description.get("target_type") == "mac", description
+          address = description.get("companion_info", {}).get("address", {})
+          assert address.get("host") == sys.argv[2], description
+          print(f"unauthenticated_describe_target={description['udid']}")
           PY
 
           env -u IDB_COMPANION -u IDB_COMPANION_TLS \
