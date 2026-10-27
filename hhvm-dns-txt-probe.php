@@ -8,7 +8,14 @@ function main(): void {
   }
   unset($groom);
 
-  $records = dns_get_record('multi-string.test', DNS_TXT);
+  $authns = null;
+  $additional = null;
+  $records = dns_get_record(
+    'multi-string.test',
+    DNS_TXT,
+    inout $authns,
+    inout $additional,
+  );
   if ($records === false || count($records) !== 1) {
     throw new Exception('Expected exactly one TXT response');
   }
