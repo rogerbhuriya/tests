@@ -21,11 +21,11 @@ jobs:
       - name: Install CPU Vulkan and compiler
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libvulkan-dev mesa-vulkan-drivers
+          sudo apt-get install -y clang libvulkan-dev mesa-vulkan-drivers vulkan-tools
+          ls -l /usr/share/vulkan/icd.d/
+          vulkaninfo --summary || true
 
       - name: Test whether Vulkan accepts malformed module
-        env:
-          VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
         run: |
           cat > /tmp/vulkan-gate.cpp <<'CPP'
           #include <cstdint>
@@ -40,9 +40,13 @@ jobs:
             VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
             ici.pApplicationInfo = &app;
             VkInstance instance = VK_NULL_HANDLE;
-            if (vkCreateInstance(&ici, nullptr, &instance) != VK_SUCCESS) return 2;
+            const VkResult instanceResult = vkCreateInstance(&ici, nullptr, &instance);
+            std::cout << "vkCreateInstance_result=" << instanceResult << "\n";
+            if (instanceResult != VK_SUCCESS) return 2;
             uint32_t count = 0;
-            if (vkEnumeratePhysicalDevices(instance, &count, nullptr) != VK_SUCCESS || count == 0) return 3;
+            const VkResult enumerateResult = vkEnumeratePhysicalDevices(instance, &count, nullptr);
+            std::cout << "vkEnumeratePhysicalDevices_result=" << enumerateResult << " count=" << count << "\n";
+            if (enumerateResult != VK_SUCCESS || count == 0) return 3;
             std::vector<VkPhysicalDevice> physical(count);
             vkEnumeratePhysicalDevices(instance, &count, physical.data());
             uint32_t queueFamilyCount = 0;
@@ -60,7 +64,9 @@ jobs:
             dci.queueCreateInfoCount = 1;
             dci.pQueueCreateInfos = &qci;
             VkDevice device = VK_NULL_HANDLE;
-            if (vkCreateDevice(physical[0], &dci, nullptr, &device) != VK_SUCCESS) return 4;
+            const VkResult deviceResult = vkCreateDevice(physical[0], &dci, nullptr, &device);
+            std::cout << "vkCreateDevice_result=" << deviceResult << " queue_family=" << queueFamily << "\n";
+            if (deviceResult != VK_SUCCESS) return 4;
 
             const uint32_t malformed[] = {
                 0x07230203u, 0x00010000u, 0u, 1u, 0u,
