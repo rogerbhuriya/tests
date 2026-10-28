@@ -1,0 +1,107 @@
+name: kuduraft Raft token disclosure validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact reviewed source
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/kuduraft
+          ref: e4167555c89eb92e2582bd63a87f4964fd5e191b
+          path: kuduraft
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prove token disclosure control flow
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C kuduraft rev-parse HEAD)" = e4167555c89eb92e2582bd63a87f4964fd5e191b
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          root = Path("kuduraft")
+          service = (root / "src/kudu/tserver/consensus_service.cc").read_text()
+          context = (root / "src/kudu/rpc/rpc_context.cc").read_text()
+          proto = (root / "src/kudu/consensus/consensus.proto").read_text()
+
+          def require(condition, message):
+              if not condition:
+                  raise SystemExit(f"verification failed: {message}")
+
+          def braced_block(text, signature):
+              start = text.find(signature)
+              require(start >= 0, f"missing {signature}")
+              opening = text.find("{", start)
+              require(opening >= 0, f"missing opening brace for {signature}")
+              depth = 0
+              for index in range(opening, len(text)):
+                  if text[index] == "{":
+                      depth += 1
+                  elif text[index] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          return text[start:index + 1]
+              raise SystemExit(f"verification failed: unterminated {signature}")
+
+          update = braced_block(service, "void ConsensusServiceImpl::UpdateConsensus(")
+          vote = braced_block(service, "void ConsensusServiceImpl::RequestConsensusVote(")
+          validator = braced_block(service, "bool checkRaftRpcTokenOrRespond(")
+          setup_error = braced_block(service, "static void setupErrorAndRespond(")
+          respond_no_cache = braced_block(context, "void RpcContext::respondNoCache()")
+          vote_response = braced_block(proto, "message VoteResponsePB")
+          consensus_response = braced_block(proto, "message ConsensusResponsePB")
+
+          def stamped_before_check(block):
+              stamp = block.find("resp->set_raft_rpc_token")
+              check = block.find("checkRaftRpcTokenOrRespond")
+              return stamp >= 0 and check >= 0 and stamp < check
+
+          require(stamped_before_check(update), "UpdateConsensus ordering changed")
+          require(stamped_before_check(vote), "RequestConsensusVote ordering changed")
+          require("Receiver token: {}. Request token: {}" in validator,
+                  "token placeholders missing from mismatch error")
+          require("ownToken ? *ownToken" in validator,
+                  "receiver token missing from mismatch error")
+          require("Status::NotAuthorized(std::move(errorMessage))" in validator,
+                  "mismatch status is not serialized")
+          require("statusToPb(s, error->mutable_status())" in setup_error,
+                  "status is not copied to response")
+          require("context->respondNoCache()" in setup_error,
+                  "mismatch does not return populated response")
+          require("call_->respondSuccess(*responsePb_)" in respond_no_cache,
+                  "complete response protobuf is not returned")
+          require(re.search(r"optional\s+string\s+raft_rpc_token\s*=\s*8\s*;", vote_response),
+                  "vote response token field missing")
+          require(re.search(r"optional\s+string\s+raft_rpc_token\s*=\s*4\s*;", consensus_response),
+                  "consensus response token field missing")
+          require('option (kudu.rpc.default_authz_method) = "AuthorizeServiceUser";' in proto,
+                  "service-user boundary missing")
+          require("ServerBase::kSuperUser | ServerBase::kServiceUser" in service,
+                  "service authorization changed")
+
+          message = subprocess.check_output(
+              ["git", "-C", str(root), "show", "-s", "--format=%B",
+               "7e640b9e83991c57874c0a763eac38dc7a409347"],
+              text=True,
+          )
+          require(re.search(r"against other bad nodes,\s+not DBAs", message),
+                  "cross-node threat model missing")
+
+          print("update_consensus_leaks_before_validation=true")
+          print("request_vote_leaks_before_validation=true")
+          print("mismatch_error_discloses_receiver_token=true")
+          print("mismatch_response_is_serialized=true")
+          print("cross_ring_threat_model_confirmed=true")
+          print("finding_reproduced=true")
+          PY
