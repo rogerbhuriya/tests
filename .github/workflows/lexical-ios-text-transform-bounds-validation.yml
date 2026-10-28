@@ -1,0 +1,53 @@
+name: lexical-ios textTransform bounds validation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@v4
+
+      - name: Checkout exact lexical-ios revision
+        uses: actions/checkout@v4
+        with:
+          repository: facebook/lexical-ios
+          ref: 59a67a7442e637ebaf08e1a5a3da2fb2e2df7b78
+          path: lexical-ios
+
+      - name: Instrument the pointer read and add focused test
+        run: |
+          cp proofs/lexical-ios-text-transform-bounds.swift \
+            lexical-ios/LexicalTests/Tests/TextTransformBoundsTests.swift
+          perl -0pi -e 's@      while glyphSubrangeEnd <= incomingGlyphsLength \{@      NSLog("LEXICAL_OOB_INDEX read=%ld valid_count=%ld", glyphSubrangeEnd + 1, incomingGlyphsLength)\n      precondition(glyphSubrangeEnd + 1 < incomingGlyphsLength, "LEXICAL_OOB_INDEX")\n      while glyphSubrangeEnd <= incomingGlyphsLength \{@' \
+            lexical-ios/Lexical/TextKit/LayoutManagerDelegate.swift
+          grep -n -A3 -B2 LEXICAL_OOB_INDEX \
+            lexical-ios/Lexical/TextKit/LayoutManagerDelegate.swift
+
+      - name: Run on an iOS simulator and require the bounds trap
+        working-directory: lexical-ios
+        run: |
+          device_id="$(
+            xcrun simctl list devices available -j |
+              jq -r '.devices[][] | select(.name | startswith("iPhone")) | .udid' |
+              head -1
+          )"
+          test -n "$device_id"
+          set +e
+          xcodebuild test \
+            -scheme Lexical \
+            -destination "platform=iOS Simulator,id=$device_id" \
+            -only-testing:LexicalTests/TextTransformBoundsTests \
+            CODE_SIGNING_ALLOWED=NO \
+            > /tmp/lexical-ios-test.log 2>&1
+          status=$?
+          set -e
+          tail -200 /tmp/lexical-ios-test.log
+          test "$status" -ne 0
+          grep -F 'LEXICAL_OOB_INDEX' /tmp/lexical-ios-test.log
